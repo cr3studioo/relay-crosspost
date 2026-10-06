@@ -11,15 +11,15 @@ const steps = [
   ],
   [
     "Connect your accounts",
-    "Switch Instagram to Creator or Business and link a Facebook Page. Configure your Meta and Google developer apps with the callback URLs below, then connect both accounts from the dashboard.",
+    "Choose YouTube, Instagram, or both in Settings. For YouTube, configure Google and connect your channel. For Instagram, use a Creator or Business account linked to a Facebook Page and configure Meta. Only selected destinations need to be connected.",
   ],
   [
     "Start the free worker",
     "Add the worker's secrets to GitHub Actions. Run the retrieval probe, set your TikTok profile in Settings, and run the worker to import the history. The queue stays paused.",
   ],
   [
-    "Verify one paired post",
-    "Complete the YouTube API public-upload audit, confirm it in Settings, and run Verify with one chosen TikTok ID. Once both posts succeed, resume the queue in the dashboard.",
+    "Verify one post",
+    "If YouTube is selected, complete its API public-upload audit and confirm it in Settings. Run Verify with one chosen queued TikTok ID. Once publication to your selected destinations succeeds, resume the queue in the dashboard.",
   ],
 ];
 export default function Setup() {

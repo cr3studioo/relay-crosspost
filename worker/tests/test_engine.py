@@ -14,6 +14,7 @@ class FakeStore:
     def __init__(self):
         self.config = {"source_profile": "https://www.tiktok.com/@test", "import_complete": False, "paused": False,
                        "integrations_verified": True, "youtube_audit_confirmed": True, "timezone": "Europe/Prague",
+                       "enabled_platforms": ["instagram", "youtube"],
                        "start_hour": 7, "end_hour": 21, "last_publication_at": None,
                        "instagram_template": "{caption}", "youtube_title_template": "{first_line}", "youtube_description_template": "{caption}"}
         self.videos, self.pubs, self.messages = {}, {}, []
@@ -28,7 +29,7 @@ class FakeStore:
     def ingest(self, video):
         self.videos.setdefault(video["id"], dict(video, state="queued"))
         for platform in ("instagram", "youtube"):
-            self.pubs.setdefault((video["id"], platform), {"platform": platform, "state": "pending", "external_id": None, "attempts": 0})
+            self.pubs.setdefault((video["id"], platform), {"platform": platform, "required": platform in self.config["enabled_platforms"], "state": "pending", "external_id": None, "attempts": 0})
     def head(self):
         return next(iter(sorted((v for v in self.videos.values() if v["state"] not in ("published", "skipped")), key=lambda v: (v["source_created_at"], v["id"]))), None)
     def video(self, video_id): return self.videos.get(video_id)
@@ -41,7 +42,7 @@ class FakeStore:
             self.pubs[(video_id, platform)].update(patch)
             if patch.get("state") == "published":
                 self.config["last_publication_at"] = patch["published_at"]
-            if all(p["state"] == "published" for (id_, _), p in self.pubs.items() if id_ == video_id):
+            if all(p["state"] == "published" for (id_, _), p in self.pubs.items() if id_ == video_id and p["required"]):
                 self.videos[video_id]["state"] = "published"
     def event(self, level, message, video_id=None): self.messages.append((level, message, video_id))
 
@@ -190,6 +191,51 @@ class EngineTests(unittest.TestCase):
         db.publication_patch("2", "youtube", {"state": "published", "published_at": "2026-10-06T07:45:00Z"})
         engine.process(db.video("1"))
         self.assertFalse(providers["youtube"].calls)
+
+    @patch("worker.engine.now", return_value=INSTANT)
+    def test_youtube_only_completes_without_instagram_and_keeps_hourly_spacing(self, clock):
+        db, providers, engine = self.create()
+        db.config["enabled_platforms"] = ["youtube"]
+        del providers["instagram"]  # There is no Instagram integration to call.
+        engine.tick();engine.tick()
+        self.assertEqual(db.videos["1"]["state"], "published")
+        self.assertEqual(db.pubs[("1", "instagram")]["state"], "pending")
+        self.assertEqual(providers["youtube"].calls, ["1"])
+        clock.return_value = datetime(2026, 10, 6, 9, tzinfo=UTC)
+        engine.tick();engine.tick()
+        self.assertEqual(providers["youtube"].calls, ["1", "2"])
+
+    @patch("worker.engine.now", return_value=INSTANT)
+    def test_disabled_instagram_errors_do_not_stall_youtube_verification(self, _clock):
+        db, providers, engine = self.create()
+        db.config.update(enabled_platforms=["youtube"], paused=True, integrations_verified=False)
+        for video in POSTS: db.ingest(video)
+        db.pubs[("1", "instagram")].update(state="attention", error_code="account_not_connected")
+        engine.tick("1")
+        self.assertTrue(db.config["integrations_verified"])
+        self.assertTrue(db.config["paused"])
+        self.assertEqual(providers["youtube"].calls, ["1"])
+        self.assertEqual(providers["instagram"].calls, [])
+
+    @patch("worker.engine.now", return_value=INSTANT)
+    def test_completed_youtube_post_cannot_verify_a_new_instagram_destination(self, _clock):
+        db, providers, engine = self.create()
+        db.config["enabled_platforms"] = ["youtube"]
+        engine.tick()
+        db.config.update(enabled_platforms=["instagram", "youtube"], integrations_verified=False, paused=True)
+        result = engine.tick("1")
+        self.assertIn("test_video_destinations_mismatch", result)
+        self.assertFalse(db.config["integrations_verified"])
+        self.assertEqual(providers["youtube"].calls, ["1"])
+
+    @patch("worker.engine.now", return_value=INSTANT)
+    def test_instagram_only_does_not_require_a_youtube_audit(self, _clock):
+        db, providers, engine = self.create()
+        db.config.update(enabled_platforms=["instagram"], youtube_audit_confirmed=False)
+        engine.tick()
+        self.assertEqual(db.videos["1"]["state"], "published")
+        self.assertEqual(providers["instagram"].calls, ["1"])
+        self.assertEqual(providers["youtube"].calls, [])
 
 
 if __name__ == "__main__": unittest.main()

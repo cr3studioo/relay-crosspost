@@ -9,7 +9,7 @@ import {
   decrypt,
   encrypt,
 } from "@/lib/server";
-import type { Settings } from "@/lib/types";
+import type { Platform, Settings } from "@/lib/types";
 function feedback(message: string): never {
   redirect("/?notice=" + encodeURIComponent(message));
 }
@@ -43,14 +43,16 @@ export async function togglePause() {
       .select("platform,account_id");
     if (
       ce ||
-      connections?.filter((c) => c.account_id).length !== 2 ||
+      !s.enabled_platforms.every((platform) =>
+        connections?.some((c) => c.platform === platform && c.account_id),
+      ) ||
       !s.source_profile ||
-      !s.youtube_audit_confirmed ||
+      (s.enabled_platforms.includes("youtube") && !s.youtube_audit_confirmed) ||
       !s.integrations_verified ||
       !s.import_complete
     )
       feedback(
-        "Complete connections, initial import, YouTube audit, and the setup test before enabling automatic posting.",
+        "Connect your selected destinations, finish the initial import and setup test, and confirm the YouTube audit if YouTube is selected.",
       );
   }
   const result = await db
@@ -76,6 +78,10 @@ export async function controlVideo(form: FormData) {
 }
 export async function saveSettings(form: FormData) {
   await owner();
+  const enabled_platforms = (["instagram", "youtube"] as Platform[]).filter(
+    (platform) => form.getAll("enabled_platforms").includes(platform),
+  );
+  if (!enabled_platforms.length) feedback("Select at least one destination.");
   const source_profile = String(form.get("source_profile") || "")
     .trim()
     .replace(/\/$/, "");
@@ -129,19 +135,21 @@ export async function saveSettings(form: FormData) {
     feedback(
       "Changing TikTok accounts requires a deliberate history reset. This app is configured for one source account.",
     );
-  const { error } = await db
-    .from("settings")
-    .update({
+  const { error } = await db.rpc("save_preferences", {
+    p_patch: {
       source_profile,
       timezone,
       start_hour,
       end_hour,
       ...templates,
+      enabled_platforms,
       youtube_audit_confirmed: form.get("youtube_audit_confirmed") === "on",
-      ...(form.get("youtube_audit_confirmed") !== "on" ? { paused: true } : {}),
-    })
-    .eq("singleton", true);
-  if (error) feedback("Could not save settings.");
+    },
+  });
+  if (error)
+    feedback(
+      "Could not save settings. If the worker is running, try again after it finishes.",
+    );
   revalidatePath("/");
   feedback("Settings saved. Prepared uploads retain their original captions.");
 }

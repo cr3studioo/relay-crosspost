@@ -83,19 +83,21 @@ function Mark({ platform }: { platform: string }) {
 function PairStatus({ video }: { video: Video }) {
   return (
     <div className="pair-status">
-      {["instagram", "youtube"].map((platform) => {
-        const p = video.publications.find((p) => p.platform === platform);
-        return (
-          <span
-            key={platform}
-            className={p?.state === "published" ? "done" : ""}
-            title={`${platform}: ${p?.state || "waiting"}`}
-          >
-            <Mark platform={platform} />
-            {p?.state === "published" && <Check size={10} />}
-          </span>
-        );
-      })}
+      {video.publications
+        .filter((p) => p.required)
+        .map((p) => {
+          const platform = p.platform;
+          return (
+            <span
+              key={platform}
+              className={p?.state === "published" ? "done" : ""}
+              title={`${platform}: ${p?.state || "waiting"}`}
+            >
+              <Mark platform={platform} />
+              {p?.state === "published" && <Check size={10} />}
+            </span>
+          );
+        })}
     </div>
   );
 }
@@ -137,7 +139,7 @@ export default async function Dashboard({
     const query = db
       .from("videos")
       .select(
-        "id,source_url,source_created_at,caption,state,reason,duration,publications(platform,state,external_id,public_url,published_at,error_code,next_retry_at)",
+        "id,source_url,source_created_at,caption,state,reason,duration,publications(platform,required,state,external_id,public_url,published_at,error_code,next_retry_at)",
       );
     const filter =
       tab === "queue" || tab === "settings"
@@ -333,10 +335,42 @@ export default async function Dashboard({
               <div className="section-title">
                 <h2>Publishing preferences</h2>
                 <span className="badge neutral">
-                  One source · two destinations
+                  One source · {settings.enabled_platforms.length}{" "}
+                  {settings.enabled_platforms.length === 1
+                    ? "destination"
+                    : "destinations"}
                 </span>
               </div>
               <form action={saveSettings}>
+                <h3>Post to</h3>
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    name="enabled_platforms"
+                    value="youtube"
+                    defaultChecked={settings.enabled_platforms.includes(
+                      "youtube",
+                    )}
+                  />
+                  <span>YouTube Shorts</span>
+                </label>
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    name="enabled_platforms"
+                    value="instagram"
+                    defaultChecked={settings.enabled_platforms.includes(
+                      "instagram",
+                    )}
+                  />
+                  <span>Instagram Reels</span>
+                </label>
+                <p className="muted">
+                  Choose one or both. Changing destinations pauses automation
+                  until you verify a post. Completed videos keep their original
+                  destinations.
+                </p>
+                <div className="form-divider" />
                 <label>
                   TikTok profile URL
                   <input
@@ -468,6 +502,9 @@ export default async function Dashboard({
                       const connection = connections.find(
                         (c) => c.platform === platform,
                       );
+                      const enabled = settings.enabled_platforms.some(
+                        (p) => p === platform,
+                      );
                       return (
                         <div className="platform-node" key={platform}>
                           <div className={`platform-logo ${platform}`}>
@@ -480,12 +517,21 @@ export default async function Dashboard({
                                 : "YouTube Shorts"}
                             </strong>
                             <small>
-                              {connection?.account_id
-                                ? connection.account_label
-                                : "Not connected yet"}
+                              {!enabled
+                                ? "Disabled in Settings"
+                                : connection?.account_id
+                                  ? connection.account_label
+                                  : "Not connected yet"}
                             </small>
                           </div>
-                          {connection?.account_id ? (
+                          {!enabled ? (
+                            <Link
+                              className="connect-button"
+                              href="/?tab=settings"
+                            >
+                              Enable <Settings2 size={13} />
+                            </Link>
+                          ) : connection?.account_id ? (
                             <a
                               className="connect-button"
                               href={`/api/oauth/${platform}`}
@@ -522,31 +568,32 @@ export default async function Dashboard({
                   </span>
                 </div>
               </section>
-              {candidates.length > 0 && (
-                <section className="panel">
-                  <h2>Choose your Instagram</h2>
-                  <p>
-                    Choose the Facebook Page linked to the account you want to
-                    publish to.
-                  </p>
-                  {candidates.map((c) => (
-                    <form
-                      className="candidate-form"
-                      action={chooseInstagram}
-                      key={c.id}
-                    >
-                      <input type="hidden" name="page_id" value={c.id} />
-                      <span>
-                        {c.name} ·{" "}
-                        {c.instagram_business_account.username || "Instagram"}
-                      </span>
-                      <Submit className="button subtle">
-                        Use this account
-                      </Submit>
-                    </form>
-                  ))}
-                </section>
-              )}
+              {settings.enabled_platforms.includes("instagram") &&
+                candidates.length > 0 && (
+                  <section className="panel">
+                    <h2>Choose your Instagram</h2>
+                    <p>
+                      Choose the Facebook Page linked to the account you want to
+                      publish to.
+                    </p>
+                    {candidates.map((c) => (
+                      <form
+                        className="candidate-form"
+                        action={chooseInstagram}
+                        key={c.id}
+                      >
+                        <input type="hidden" name="page_id" value={c.id} />
+                        <span>
+                          {c.name} ·{" "}
+                          {c.instagram_business_account.username || "Instagram"}
+                        </span>
+                        <Submit className="button subtle">
+                          Use this account
+                        </Submit>
+                      </form>
+                    ))}
+                  </section>
+                )}
               <section className="stats-grid">
                 <article>
                   <span>
@@ -557,10 +604,10 @@ export default async function Dashboard({
                 </article>
                 <article>
                   <span>
-                    Published everywhere <CheckCircle2 size={16} />
+                    Published <CheckCircle2 size={16} />
                   </span>
                   <strong>{String(counts.published).padStart(2, "0")}</strong>
-                  <small>Both destinations confirmed</small>
+                  <small>Selected destinations confirmed</small>
                 </article>
                 <article>
                   <span>
@@ -588,8 +635,8 @@ export default async function Dashboard({
                         : "A few connections, then you’re ready."}
                     </strong>
                     <p>
-                      Connect your accounts, import your TikToks, and verify one
-                      paired post before enabling automation.
+                      Connect your selected destinations, import your TikToks,
+                      and verify one post before enabling automation.
                     </p>
                   </div>
                   <Link href="/setup">
@@ -679,7 +726,8 @@ export default async function Dashboard({
                                 {counts.attention > 0
                                   ? "Queue blocked"
                                   : video.publications.some(
-                                        (p) => p.state === "retry",
+                                        (p) =>
+                                          p.required && p.state === "retry",
                                       )
                                     ? "Retry pending"
                                     : settings.paused

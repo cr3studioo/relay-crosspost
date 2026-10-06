@@ -8,6 +8,7 @@ export type Settings = {
   import_complete: boolean;
   integrations_verified: boolean;
   youtube_audit_confirmed: boolean;
+  enabled_platforms: Platform[];
   instagram_template: string;
   youtube_title_template: string;
   youtube_description_template: string;
@@ -18,6 +19,7 @@ export type Settings = {
 };
 export type Publication = {
   platform: Platform;
+  required: boolean;
   state: string;
   external_id: string | null;
   public_url: string | null;
@@ -50,6 +52,7 @@ export const defaults: Settings = {
   import_complete: false,
   integrations_verified: false,
   youtube_audit_confirmed: false,
+  enabled_platforms: ["instagram", "youtube"],
   instagram_template: "{caption}",
   youtube_title_template: "{first_line}",
   youtube_description_template: "{caption}",

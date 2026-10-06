@@ -1,6 +1,6 @@
 # Relay
 
-One TikTok account → Instagram Reels + YouTube Shorts. A private Next.js dashboard, Supabase metadata database, and a Python worker that runs on free standard GitHub Actions runners in a **public** repository. All publishing starts paused.
+One TikTok account → YouTube Shorts, Instagram Reels, or both. A private Next.js dashboard, Supabase metadata database, and a Python worker that runs on free standard GitHub Actions runners in a **public** repository. All publishing starts paused.
 
 ## What is implemented
 
@@ -76,7 +76,7 @@ Use the **same key** in Vercel and GitHub Secrets. Keep it backed up privately; 
 
 ## 4. Social account setup
 
-### Instagram / Meta
+### Instagram / Meta (only if selected)
 
 1. Switch your Instagram account to **Creator or Business**, and link a Facebook Page you administer. The app will not post to that Page.
 2. Create a Meta developer app and configure the Instagram API with **Facebook Login for Business** so direct resumable file uploads are available. If you create a Login for Business configuration, choose a user access token, include the permissions listed below, and set its ID as `META_LOGIN_CONFIG_ID` in Vercel. Relay exchanges the returned authorization code on the server.
@@ -138,13 +138,15 @@ Updating `yt-dlp` may be needed after TikTok changes; update its pinned version 
 
 If only profile resolution fails, yt-dlp supports looking up the same public account with `tiktokuser:channel_id`. Resolve `channel_id` on a working network, then configure the optional paired secrets above. The worker validates every returned post's uploader URL against the configured profile and stops on a mismatch. This lookup still requires TikTok's video API and downloads to be reachable from the runner. See the [official TikTok extractor](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/tiktok.py).
 
-## 6. Import, verify one paired post, then resume
+## 6. Import, verify one post, then resume
 
-1. Sign in to Relay and save your exact public TikTok profile URL in Settings. Configure templates and the audit confirmation. Publishing remains paused.
+1. Sign in to Relay and save your exact public TikTok profile URL in Settings. Select YouTube, Instagram, or both, and connect only those destinations. Configure templates and the audit confirmation if YouTube is selected. Publishing remains paused.
 2. Run the worker in `tick` mode. It imports the full history. If a run ends at its time budget, discovered IDs remain saved; subsequent runs avoid re-writing them and continue until enumeration completes. No normal posting starts before a complete import.
-3. Choose **one imported eligible TikTok** as the real publishing test. Its TikTok ID is the number in its original URL. Run `verify` with that `video_id`, during your posting window. This intentionally publishes that single selected video to both connected destinations even while the normal queue is paused.
+3. Choose **one queued eligible TikTok** as the real publishing test. Its TikTok ID is the number in its original URL. Run `verify` with that `video_id`, during your posting window. This intentionally publishes that single selected video to your selected destinations even while the normal queue is paused.
 4. If processing requires several checks, rerun **verify with the same ID**. The same stored upload/container IDs are reused. The chosen video is recorded as published and will not be reposted by the backlog.
-5. Once both publications are confirmed, `integrations_verified` becomes true. Click **Resume queue** in Relay. Later scheduled runs post the oldest remaining eligible videos, with the hourly gap.
+5. Once publications to every selected destination are confirmed, `integrations_verified` becomes true. Click **Resume queue** in Relay. Later scheduled runs post the oldest remaining eligible videos, with the hourly gap.
+
+YouTube-only mode requires no Meta application, Instagram connection, or Instagram processing. Changing destinations pauses automation and requires a fresh verification with a queued video. The change applies to unfinished videos; completed videos keep their original targets and successful upload IDs. Enabling Instagram later does not backfill videos already completed on YouTube. Destination changes are blocked while the worker holds its lease so they cannot race an upload.
 
 Changing caption templates affects uploads that have not been prepared yet. Each destination freezes its rendered text when its upload starts. YouTube titles are trimmed to 100 characters; captions/descriptions that exceed destination limits require a template change and retry rather than silent text loss.
 

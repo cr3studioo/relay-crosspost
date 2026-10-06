@@ -161,7 +161,190 @@ test("Only the provisioned owner can read rows; browsers cannot access credentia
     await assert.rejects(pg.query("select * from credentials"));
     await assert.rejects(pg.query("select acquire_lease($1)", [A]));
     await assert.rejects(pg.query("select control_video('123','skip')"));
+    await assert.rejects(
+      pg.query(
+        'select save_preferences(\'{"enabled_platforms":["youtube"]}\'::jsonb)',
+      ),
+    );
     await assert.rejects(pg.query("update settings set paused=false"));
+  } finally {
+    await pg.close();
+  }
+});
+test("YouTube-only import completes after one publication and preserves completed history when Instagram is enabled", async () => {
+  const pg = await db();
+  try {
+    await pg.query("select save_preferences($1::jsonb)", [
+      JSON.stringify({ enabled_platforms: ["youtube"] }),
+    ]);
+    await pg.query("select acquire_lease($1)", [A]);
+    await ingest(pg);
+    await ingest(pg, "124");
+    assert.deepEqual(
+      (
+        await pg.query<{ platform: string; required: boolean }>(
+          "select platform,required from publications where video_id='123' order by platform",
+        )
+      ).rows,
+      [
+        { platform: "instagram", required: false },
+        { platform: "youtube", required: true },
+      ],
+    );
+    await pg.query("select update_publication($1,'123','youtube',$2::jsonb)", [
+      A,
+      JSON.stringify({
+        state: "published",
+        external_id: "yt123",
+        published_at: "2026-10-06T10:00:00Z",
+      }),
+    ]);
+    assert.equal(
+      (
+        await pg.query<{ state: string }>(
+          "select state from videos where id='123'",
+        )
+      ).rows[0].state,
+      "published",
+    );
+    await pg.query(
+      "select worker_settings($1,'{\"integrations_verified\":true}'::jsonb)",
+      [A],
+    );
+    await assert.rejects(
+      pg.query(
+        'select save_preferences(\'{"enabled_platforms":["instagram","youtube"]}\'::jsonb)',
+      ),
+    );
+    await pg.query("select release_lease($1)", [A]);
+    await pg.query(
+      'select save_preferences(\'{"enabled_platforms":["instagram","youtube"]}\'::jsonb)',
+    );
+    const preferences = (
+      await pg.query<{ paused: boolean; integrations_verified: boolean }>(
+        "select paused,integrations_verified from settings",
+      )
+    ).rows[0];
+    assert.deepEqual(preferences, {
+      paused: true,
+      integrations_verified: false,
+    });
+    assert.equal(
+      (
+        await pg.query<{ required: boolean }>(
+          "select required from publications where video_id='123' and platform='instagram'",
+        )
+      ).rows[0].required,
+      false,
+    );
+    assert.equal(
+      (
+        await pg.query<{ required: boolean }>(
+          "select required from publications where video_id='124' and platform='instagram'",
+        )
+      ).rows[0].required,
+      true,
+    );
+    await pg.query("select control_video('123','retry')");
+    assert.equal(
+      (
+        await pg.query<{ state: string; external_id: string }>(
+          "select state,external_id from publications where video_id='123' and platform='youtube'",
+        )
+      ).rows[0].external_id,
+      "yt123",
+    );
+    assert.equal(
+      (
+        await pg.query<{ state: string }>(
+          "select state from videos where id='123'",
+        )
+      ).rows[0].state,
+      "published",
+    );
+  } finally {
+    await pg.close();
+  }
+});
+test("Removing a failing destination clears its blockage, but retains confirmed publications and their spacing", async () => {
+  const pg = await db();
+  try {
+    await pg.query("select acquire_lease($1)", [A]);
+    await ingest(pg);
+    await pg.query("select update_publication($1,'123','youtube',$2::jsonb)", [
+      A,
+      JSON.stringify({
+        state: "published",
+        external_id: "yt123",
+        published_at: "2026-10-06T10:00:00Z",
+      }),
+    ]);
+    await pg.query(
+      'select update_publication($1,\'123\',\'instagram\',\'{"state":"attention","error_code":"account_not_connected"}\'::jsonb)',
+      [A],
+    );
+    await pg.query(
+      "select update_video($1,'123','attention','account_not_connected')",
+      [A],
+    );
+    await pg.query("select release_lease($1)", [A]);
+    await pg.query(
+      'select save_preferences(\'{"enabled_platforms":["youtube"]}\'::jsonb)',
+    );
+    assert.deepEqual(
+      (
+        await pg.query<{ state: string; reason: string | null }>(
+          "select state,reason from videos where id='123'",
+        )
+      ).rows[0],
+      { state: "published", reason: null },
+    );
+    assert.equal(
+      new Date(
+        (
+          await pg.query<{ last_publication_at: string }>(
+            "select last_publication_at from settings",
+          )
+        ).rows[0].last_publication_at,
+      ).toISOString(),
+      "2026-10-06T10:00:00.000Z",
+    );
+    await pg.query("select control_video('123','retry')");
+    assert.equal(
+      (
+        await pg.query<{ state: string }>(
+          "select state from publications where platform='instagram'",
+        )
+      ).rows[0].state,
+      "attention",
+    );
+  } finally {
+    await pg.close();
+  }
+});
+test("Destination settings reject empty, duplicate, and unsupported target sets", async () => {
+  const pg = await db();
+  try {
+    for (const enabled_platforms of [
+      [],
+      ["youtube", "youtube"],
+      ["tiktok"],
+      ["youtube", null],
+    ]) {
+      await assert.rejects(
+        pg.query("select save_preferences($1::jsonb)", [
+          JSON.stringify({ enabled_platforms }),
+        ]),
+      );
+    }
+    assert.deepEqual(
+      (
+        await pg.query<{ enabled_platforms: string[] }>(
+          "select enabled_platforms from settings",
+        )
+      ).rows[0].enabled_platforms,
+      ["instagram", "youtube"],
+    );
   } finally {
     await pg.close();
   }

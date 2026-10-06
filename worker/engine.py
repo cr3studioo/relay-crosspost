@@ -34,6 +34,13 @@ class Engine:
             self.store.video_patch(video["id"], "attention", error.code)
         self.store.event("error" if error.permanent else "warning", f"{platform}: {error.code}", video["id"])
 
+    def publications(self, video):
+        return [p for p in self.store.publications(video["id"]) if p.get("required", True)]
+
+    @staticmethod
+    def audit_ready(settings):
+        return "youtube" not in settings["enabled_platforms"] or settings["youtube_audit_confirmed"]
+
     def discover(self, settings):
         if not settings["source_profile"]:
             return False
@@ -56,7 +63,11 @@ class Engine:
             return settings["import_complete"]
 
     def process(self, video, verify=False):
-        pubs = self.store.publications(video["id"])
+        pubs = self.publications(video)
+        if not pubs:
+            raise RelayError("no_destination_selected", permanent=True)
+        if verify and {p["platform"] for p in pubs} != set(self.store.settings()["enabled_platforms"]):
+            raise RelayError("test_video_destinations_mismatch", permanent=True)
         if any(p["state"] == "attention" for p in pubs):
             return
         # A crashed publishing call must be reconciled before creating or publishing anything.
@@ -68,7 +79,7 @@ class Engine:
                     self.providers[pub["platform"]].reconcile(video, pub)
                 except RelayError as error:
                     self.failure(video, pub["platform"], error)
-        pubs = self.store.publications(video["id"])
+        pubs = self.publications(video)
         if all(p["state"] == "published" for p in pubs):
             if verify:
                 self.store.settings_patch({"integrations_verified": True})
@@ -104,7 +115,7 @@ class Engine:
                     self.providers[platform].prepare(video, pub, path, frozen)
                 except RelayError as error:
                     self.failure(video, platform, error)
-            pubs = self.store.publications(video["id"])
+            pubs = self.publications(video)
             # Give ordinary processing a chance to finish in this same check,
             # rather than adding an unnecessary fifteen-minute publication delay.
             for _ in range(2):
@@ -120,15 +131,15 @@ class Engine:
                         self.providers[pub["platform"]].prepare(video, pub, None, pub.get("rendered_metadata") or metadata(self.store.settings(), video, pub["platform"]))
                     except RelayError as error:
                         self.failure(video, pub["platform"], error)
-                pubs = self.store.publications(video["id"])
+                pubs = self.publications(video)
             if not all(p["state"] in ("ready", "published") for p in pubs):
                 return
             settings = self.store.settings()
             partial = any(p["state"] == "published" for p in pubs)
             settings["last_publication_at"] = self.store.latest_other_publication(video["id"])
-            if (settings["paused"] and not verify) or not settings["youtube_audit_confirmed"] or not eligible_time(now(), settings):
+            if (settings["paused"] and not verify) or not self.audit_ready(settings) or not eligible_time(now(), settings):
                 return
-            # Both sources are ready. Start the two independent publication calls together.
+            # All selected destinations are ready. Dispatch their publication calls together.
             ready = [p for p in pubs if p["state"] == "ready"]
             with ThreadPoolExecutor(max_workers=2) as pool:
                 futures = [(p["platform"], pool.submit(self.publish_guarded, video, p, verify, partial)) for p in ready]
@@ -137,8 +148,9 @@ class Engine:
                         future.result()
                     except RelayError as error:
                         self.failure(video, platform, error)
-            if all(p["state"] == "published" for p in self.store.publications(video["id"])):
-                self.store.event("info", "Video published on Instagram and YouTube.", video["id"])
+            if all(p["state"] == "published" for p in self.publications(video)):
+                names = " and ".join(p["platform"].capitalize() if p["platform"] != "youtube" else "YouTube" for p in pubs)
+                self.store.event("info", "Video published on " + names + ".", video["id"])
                 if verify:
                     self.store.settings_patch({"integrations_verified": True})
 
@@ -147,12 +159,12 @@ class Engine:
         settings = self.store.settings()
         # Hour spacing was checked for the PAIR before dispatch. One platform's
         # just-confirmed publication must not block the other member of this pair.
-        if (settings["paused"] and not verify) or not settings["youtube_audit_confirmed"] or not eligible_time(now(), settings, partial=True):
+        if pub["platform"] not in settings["enabled_platforms"] or (settings["paused"] and not verify) or not self.audit_ready(settings) or not eligible_time(now(), settings, partial=True):
             return
         def before_publish():
             latest = self.store.settings()
             latest["last_publication_at"] = self.store.latest_other_publication(video["id"])
-            if (latest["paused"] and not verify) or not latest["youtube_audit_confirmed"] or not eligible_time(now(), latest):
+            if pub["platform"] not in latest["enabled_platforms"] or (latest["paused"] and not verify) or not self.audit_ready(latest) or not eligible_time(now(), latest):
                 raise RelayError("posting_paused_or_window_closed")
         self.providers[pub["platform"]].before_publish = before_publish
         self.providers[pub["platform"]].publish(video, pub)
@@ -172,7 +184,7 @@ class Engine:
                 video = self.store.video(verify_id)
                 if not video:
                     raise RelayError("test_video_not_in_source_account", permanent=True)
-            elif settings["paused"] or not settings["integrations_verified"] or not settings["youtube_audit_confirmed"]:
+            elif settings["paused"] or not settings["integrations_verified"] or not self.audit_ready(settings):
                 return "Import updated; publishing paused until setup is complete"
             else:
                 video = self.store.head()
