@@ -34,6 +34,8 @@ jobs:
       GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       META_GRAPH_VERSION: v25.0
+      TIKTOK_PROFILE_URL: ${{ secrets.TIKTOK_PROFILE_URL }}
+      TIKTOK_CHANNEL_ID: ${{ secrets.TIKTOK_CHANNEL_ID }}
       RELAY_MODE: ${{ inputs.mode || 'tick' }}
       RELAY_PROFILE: ${{ inputs.profile_url }}
       RELAY_VIDEO_URL: ${{ inputs.video_url }}

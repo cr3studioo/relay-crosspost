@@ -119,6 +119,8 @@ In repository Settings → Secrets and variables → Actions, add:
 | `TOKEN_ENCRYPTION_KEY` | Same hex key as Vercel |
 | `GOOGLE_CLIENT_ID` | Same Google client ID |
 | `GOOGLE_CLIENT_SECRET` | Same Google client secret |
+| `TIKTOK_PROFILE_URL` | Optional: profile bound to the account-ID hint below |
+| `TIKTOK_CHANNEL_ID` | Optional: yt-dlp's public `channel_id` for that same profile |
 
 Meta account tokens are encrypted in Supabase by the dashboard; the worker does not need the Meta app secret. Never enable verbose HTTP or yt-dlp debug logging in a public Actions run.
 
@@ -133,6 +135,8 @@ Open **Actions → Publishing worker → Run workflow**:
 ```
 
 Updating `yt-dlp` may be needed after TikTok changes; update its pinned version in `worker/requirements.txt`, run the tests, and repeat the probe. The app does not automatically bypass login requirements or use paid downloader services. If GitHub's network is blocked but your home network works, use the local worker below.
+
+If only profile resolution fails, yt-dlp supports looking up the same public account with `tiktokuser:channel_id`. Resolve `channel_id` on a working network, then configure the optional paired secrets above. The worker validates every returned post's uploader URL against the configured profile and stops on a mismatch. This lookup still requires TikTok's video API and downloads to be reachable from the runner. See the [official TikTok extractor](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/tiktok.py).
 
 ## 6. Import, verify one paired post, then resume
 

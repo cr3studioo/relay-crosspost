@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import subprocess
 from datetime import datetime
@@ -25,13 +26,21 @@ class Source:
         import yt_dlp
         if not re.fullmatch(r"https://www\.tiktok\.com/@[\w.]{2,24}", profile):
             raise RelayError("invalid_profile", permanent=True)
+        channel_id = os.environ.get("TIKTOK_CHANNEL_ID", "")
+        use_hint = bool(channel_id and os.environ.get("TIKTOK_PROFILE_URL") == profile)
+        if use_hint and not re.fullmatch(r"MS4w[A-Za-z0-9_-]{10,180}", channel_id):
+            raise RelayError("invalid_source_hint", permanent=True)
+        lookup = "tiktokuser:" + channel_id if use_hint else profile
         try:
             with yt_dlp.YoutubeDL(self.options(extract_flat=True, lazy_playlist=True)) as ydl:
-                info = ydl.extract_info(profile, download=False)
+                info = ydl.extract_info(lookup, download=False)
                 for entry in info.get("entries", []):
                     self.check()
                     if not entry or not entry.get("id") or not entry.get("timestamp"):
                         raise RelayError("incomplete_history_metadata")
+                    # An account-ID hint must never import another account's posts.
+                    if use_hint and (entry.get("uploader_url") or "").rstrip("/").lower() != profile.lower():
+                        raise RelayError("source_account_mismatch", permanent=True)
                     yield {"id": entry["id"], "source_url": profile + "/video/" + entry["id"],
                            "source_created_at": datetime.fromtimestamp(entry["timestamp"], UTC).isoformat(),
                            "caption": entry.get("description") or "", "duration": entry.get("duration"),
