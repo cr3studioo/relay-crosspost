@@ -162,13 +162,15 @@ The defaults mark all YouTube uploads **not made for children** and **not realis
 
 ## Local worker fallback
 
-The local worker uses the same database and dashboard. Export the five worker secrets above into your terminal environment using your preferred local secret manager, then:
+The local worker uses the same database and dashboard. Save the worker's secrets in the ignored `.env.local` (the dashboard's `NEXT_PUBLIC_SUPABASE_URL` is accepted as its URL), then:
 
 ```sh
-.venv/bin/python -m worker.main local
+.venv/bin/python -m worker.local local
 ```
 
 It checks approximately every 15 minutes. Keep the computer awake and online. **Disable the GitHub Publishing worker schedule** if using the local worker as your permanent replacement. The database lease also prevents two simultaneous workers from operating on the queue. On Windows, use `.venv\Scripts\python.exe` for Python commands.
+
+For an operating-system scheduler, invoke `.venv/bin/python -m worker.local tick` every 15 minutes with this repository as its working directory. Each invocation reloads private settings, checks once, and exits. Verify one selected setup-test video locally with `.venv/bin/python -m worker.local verify --video-id TIKTOK_ID`; this creates real posts, so choose the ID deliberately. No new video is published while normal automation is paused.
 
 ## Free-tier and scheduling limits
 
