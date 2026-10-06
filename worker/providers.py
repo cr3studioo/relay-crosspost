@@ -18,6 +18,10 @@ def api(method, url, **kwargs):
     permanent = response.status_code in (400, 401, 403, 404)
     try:
         error = response.json().get("error", {})
+        if isinstance(error, str):
+            if error in ("invalid_grant", "invalid_token"):
+                raise RelayError("authorization_revoked", permanent=True)
+            error = {}
         reasons = {e.get("reason") for e in error.get("errors", [])}
         if response.status_code == 429 or reasons & {"quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded", "userRateLimitExceeded", "uploadLimitExceeded"} or error.get("is_transient"):
             code, permanent = "platform_rate_or_quota_limit", False
@@ -37,9 +41,14 @@ class Provider:
         record, token = self.store.credentials(self.platform)
         expiry = parse_date(token.get("expires_at"))
         if self.platform == "youtube" and (not expiry or expiry < now() + timedelta(minutes=5)):
-            response = api("POST", "https://oauth2.googleapis.com/token", data={
-                "grant_type": "refresh_token", "client_id": os.environ["GOOGLE_CLIENT_ID"],
-                "client_secret": os.environ["GOOGLE_CLIENT_SECRET"], "refresh_token": token["refresh_token"]}).json()
+            try:
+                response = api("POST", "https://oauth2.googleapis.com/token", data={
+                    "grant_type": "refresh_token", "client_id": os.environ["GOOGLE_CLIENT_ID"],
+                    "client_secret": os.environ["GOOGLE_CLIENT_SECRET"], "refresh_token": token["refresh_token"]}).json()
+            except RelayError as error:
+                if error.code == "authorization_revoked":
+                    self.store.clear_youtube_data()
+                raise
             token.update(access_token=response["access_token"], expires_at=(now() + timedelta(seconds=response["expires_in"])).isoformat())
             self.store.save_credentials(self.platform, token)
         elif self.platform == "instagram" and expiry and expiry <= now():
@@ -51,7 +60,7 @@ class Provider:
 
     def confirmed(self, video, external_id, url):
         self.patch(video, state="published", external_id=external_id, public_url=url,
-                   published_at=now().isoformat(), error_code=None, next_retry_at=None, resume_state=None, encrypted_session=None)
+                   published_at=now().isoformat(), confirmation_origin="relay_api", error_code=None, next_retry_at=None, resume_state=None, encrypted_session=None)
 
 
 class Instagram(Provider):
@@ -147,6 +156,65 @@ class Instagram(Provider):
 class YouTube(Provider):
     platform = "youtube"
 
+    def target(self):
+        return self.store.settings().get("youtube_visibility", "public")
+
+    def confirm_target(self, video, external_id, visibility):
+        url = "https://www.youtube.com/shorts/" + external_id if visibility in ("public", "unlisted") else None
+        self.confirmed(video, external_id, url)
+        self.store.refresh_youtube_publication(video["id"], visibility)
+
+    def maintain(self, accepted):
+        """Check revocation even while paused; refresh references or expire them."""
+        try:
+            settings = self.store.settings()
+            records = self.store.request("GET", "credentials", params={"platform": "eq.youtube"})
+            if not records:
+                return
+            record = records[0]
+            if settings.get("youtube_revoke_requested_at"):
+                try:
+                    token = unseal(record["encrypted_payload"], self.store.key)
+                except Exception:
+                    raise RelayError("credential_decryption_failed", permanent=True) from None
+                try:
+                    api("POST", "https://oauth2.googleapis.com/revoke", data={"token": token.get("refresh_token") or token["access_token"]})
+                except RelayError as error:
+                    if error.code != "authorization_revoked":
+                        raise
+                self.store.clear_youtube_data()
+                return
+            # Refreshing tokens discovers invalid_grant; network failures do not
+            # count as proof of revocation and must not erase healthy credentials.
+            account, token = self.credentials()
+            if not accepted:
+                return
+            week_ago = now() - timedelta(days=7)
+            if parse_date(record.get("api_checked_at")) is None or parse_date(record["api_checked_at"]) < week_ago:
+                channel = api("GET", "https://www.googleapis.com/youtube/v3/channels", params={"part": "snippet", "mine": "true"},
+                    headers={"Authorization": f"Bearer {token}"}).json().get("items", [])
+                if len(channel) != 1 or channel[0]["id"] != account:
+                    raise RelayError("youtube_channel_mismatch", permanent=True)
+                self.store.heartbeat()
+                self.store.request("PATCH", "credentials", params={"platform": "eq.youtube"},
+                    json={"account_label": channel[0]["snippet"]["title"], "api_checked_at": now().isoformat()})
+            # Bounded batches keep a large historical account within the worker's
+            # time budget. Missing videos lose their API references, never reupload.
+            rows = self.store.stale_youtube_publications(week_ago.isoformat())
+            if rows:
+                result = api("GET", "https://www.googleapis.com/youtube/v3/videos", params={"part": "status", "id": ",".join(p["external_id"] for p in rows)},
+                    headers={"Authorization": f"Bearer {token}"}).json()
+                found = {item["id"]: item["status"]["privacyStatus"] for item in result.get("items", [])}
+                for pub in rows:
+                    if pub["external_id"] in found:
+                        self.store.refresh_youtube_publication(pub["video_id"], found[pub["external_id"]])
+                    else:
+                        self.store.publication_patch(pub["video_id"], self.platform, {"public_url": None})
+                        # Leave the old refresh timestamp so expiry removes the
+                        # missing reference by day 30 and blocks uncertain retries.
+        finally:
+            self.store.expire_youtube_data()
+
     def video_status(self, video_id, token):
         result = api("GET", "https://www.googleapis.com/youtube/v3/videos", params={"part": "status,processingDetails", "id": video_id},
                      headers={"Authorization": f"Bearer {token}"}).json()
@@ -160,9 +228,10 @@ class YouTube(Provider):
             status = self.video_status(pub["external_id"], token)
             if status["status"].get("uploadStatus") in ("rejected", "failed", "deleted") or status.get("processingDetails", {}).get("processingStatus") in ("failed", "terminated"):
                 raise RelayError("youtube_processing_rejected", permanent=True)
-            if status["status"]["privacyStatus"] == "public":
-                self.confirmed(video, pub["external_id"], "https://www.youtube.com/shorts/" + pub["external_id"])
-            elif status.get("processingDetails", {}).get("processingStatus") == "succeeded":
+            self.store.refresh_youtube_publication(video["id"], status["status"]["privacyStatus"])
+            # A user may change visibility in Studio. Observing that change is
+            # not proof that Relay's publication request succeeded.
+            if status.get("processingDetails", {}).get("processingStatus") == "succeeded":
                 self.patch(video, state="ready")
             return
         size = path.stat().st_size
@@ -201,25 +270,26 @@ class YouTube(Provider):
     def reconcile(self, video, pub):
         _account, token = self.credentials()
         result = self.video_status(pub["external_id"], token)
-        if result["status"]["privacyStatus"] == "public":
-            self.confirmed(video, pub["external_id"], "https://www.youtube.com/shorts/" + pub["external_id"])
+        if result["status"]["privacyStatus"] == self.target():
+            self.confirm_target(video, pub["external_id"], self.target())
         else:
             # Repeating a privacy update for this known video cannot create duplicates.
             self.patch(video, state="ready", resume_state="ready")
 
     def publish(self, video, pub):
         _account, token = self.credentials()
+        target = self.target()
         self.store.heartbeat()
         self.patch(video, state="publishing", resume_state="publishing")
         try:
             self.before_publish()
             api("PUT", "https://www.googleapis.com/youtube/v3/videos", params={"part": "status"},
-                headers={"Authorization": f"Bearer {token}"}, json={"id": pub["external_id"], "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False, "containsSyntheticMedia": False}})
+                headers={"Authorization": f"Bearer {token}"}, json={"id": pub["external_id"], "status": {"privacyStatus": target, "selfDeclaredMadeForKids": False, "containsSyntheticMedia": False}})
         except RelayError as error:
             if not error.uncertain:
                 self.patch(video, state="ready", resume_state="ready")
             raise
         status = self.video_status(pub["external_id"], token)
-        if status["status"]["privacyStatus"] != "public":
+        if status["status"]["privacyStatus"] != target:
             raise RelayError("youtube_publication_restricted", permanent=True)
-        self.confirmed(video, pub["external_id"], "https://www.youtube.com/shorts/" + pub["external_id"])
+        self.confirm_target(video, pub["external_id"], target)

@@ -4,6 +4,7 @@ import { login } from "../actions";
 import { Submit } from "@/components/submit";
 import { configured } from "@/lib/server";
 import { redirect } from "next/navigation";
+import { PolicyLinks } from "@/components/policy-links";
 export const dynamic = "force-dynamic";
 export default async function Login({
   searchParams,
@@ -49,6 +50,7 @@ export default async function Login({
         <Link className="text-link" href="/setup">
           Need help setting things up?
         </Link>
+        <PolicyLinks />
       </div>
       <p className="auth-footer">
         A little less uploading. A lot more creating.

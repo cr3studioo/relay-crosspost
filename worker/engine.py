@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 from .core import RelayError, BudgetReached, now, parse_date, eligible_time, retry_delay, metadata
 
 SKIPPABLE = {"no_video_source", "no_watermark_free_source", "invalid_media", "ineligible_media"}
+POLICY_VERSION = "2026-10-06"
 
 
 class Engine:
@@ -39,7 +40,11 @@ class Engine:
 
     @staticmethod
     def audit_ready(settings):
-        return "youtube" not in settings["enabled_platforms"] or settings["youtube_audit_confirmed"]
+        return "youtube" not in settings["enabled_platforms"] or settings.get("youtube_visibility", "public") == "private" or settings["youtube_audit_confirmed"]
+
+    @staticmethod
+    def policy_ready(settings):
+        return settings.get("policy_version") == POLICY_VERSION and bool(settings.get("policy_accepted_at"))
 
     def discover(self, settings):
         if not settings["source_profile"]:
@@ -63,6 +68,8 @@ class Engine:
             return settings["import_complete"]
 
     def process(self, video, verify=False):
+        if not self.policy_ready(self.store.settings()):
+            return
         pubs = self.publications(video)
         if not pubs:
             raise RelayError("no_destination_selected", permanent=True)
@@ -81,7 +88,9 @@ class Engine:
                     self.failure(video, pub["platform"], error)
         pubs = self.publications(video)
         if all(p["state"] == "published" for p in pubs):
-            if verify:
+            if verify and any(p.get("confirmation_origin") != "relay_api" for p in pubs):
+                raise RelayError("test_video_published_manually_choose_another", permanent=True)
+            if verify and self.audit_ready(self.store.settings()):
                 self.store.settings_patch({"integrations_verified": True})
             return
         if any(p["state"] == "attention" for p in pubs):
@@ -151,7 +160,7 @@ class Engine:
             if all(p["state"] == "published" for p in self.publications(video)):
                 names = " and ".join(p["platform"].capitalize() if p["platform"] != "youtube" else "YouTube" for p in pubs)
                 self.store.event("info", "Video published on " + names + ".", video["id"])
-                if verify:
+                if verify and self.audit_ready(self.store.settings()) and all(p.get("confirmation_origin") == "relay_api" for p in self.publications(video)):
                     self.store.settings_patch({"integrations_verified": True})
 
     def publish_guarded(self, video, pub, verify, partial):
@@ -159,12 +168,12 @@ class Engine:
         settings = self.store.settings()
         # Hour spacing was checked for the PAIR before dispatch. One platform's
         # just-confirmed publication must not block the other member of this pair.
-        if pub["platform"] not in settings["enabled_platforms"] or (settings["paused"] and not verify) or not self.audit_ready(settings) or not eligible_time(now(), settings, partial=True):
+        if not self.policy_ready(settings) or pub["platform"] not in settings["enabled_platforms"] or (settings["paused"] and not verify) or not self.audit_ready(settings) or not eligible_time(now(), settings, partial=True):
             return
         def before_publish():
             latest = self.store.settings()
             latest["last_publication_at"] = self.store.latest_other_publication(video["id"])
-            if pub["platform"] not in latest["enabled_platforms"] or (latest["paused"] and not verify) or not self.audit_ready(latest) or not eligible_time(now(), latest):
+            if not self.policy_ready(latest) or pub["platform"] not in latest["enabled_platforms"] or (latest["paused"] and not verify) or not self.audit_ready(latest) or not eligible_time(now(), latest):
                 raise RelayError("posting_paused_or_window_closed")
         self.providers[pub["platform"]].before_publish = before_publish
         self.providers[pub["platform"]].publish(video, pub)
@@ -175,6 +184,13 @@ class Engine:
         try:
             self.store.settings_patch({"worker_seen_at": now().isoformat()})
             settings = self.store.settings()
+            if "youtube" in self.providers:
+                self.providers["youtube"].maintain(self.policy_ready(settings))
+            settings = self.store.settings()
+            if settings.get("youtube_revoke_requested_at"):
+                return "Publishing paused; YouTube disconnection is pending"
+            if not self.policy_ready(settings):
+                return "Publishing paused; review and accept the policies in the dashboard"
             if not self.discover(settings):
                 return "Waiting for a complete history import"
             settings = self.store.settings()

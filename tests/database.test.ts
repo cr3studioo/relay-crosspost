@@ -349,3 +349,252 @@ test("Destination settings reject empty, duplicate, and unsupported target sets"
     await pg.close();
   }
 });
+
+test("Visibility changes pause and require verification; policy consent cannot be forged by browser roles", async () => {
+  const pg = await db();
+  try {
+    await pg.exec(
+      "update settings set paused=false,integrations_verified=true",
+    );
+    await pg.query<Record<string, unknown>>(
+      "select save_preferences($1::jsonb)",
+      [JSON.stringify({ youtube_visibility: "private" })],
+    );
+    assert.deepEqual(
+      (
+        await pg.query<Record<string, unknown>>(
+          "select paused,integrations_verified,youtube_visibility,policy_accepted_at from settings",
+        )
+      ).rows[0],
+      {
+        paused: true,
+        integrations_verified: false,
+        youtube_visibility: "private",
+        policy_accepted_at: null,
+      },
+    );
+    await assert.rejects(
+      pg.query<Record<string, unknown>>(
+        'select save_preferences(\'{"youtube_visibility":"secret"}\'::jsonb)',
+      ),
+    );
+    await assert.rejects(
+      pg.query<Record<string, unknown>>("select accept_policy('outdated')"),
+    );
+    await pg.exec("set role authenticated");
+    await assert.rejects(
+      pg.query<Record<string, unknown>>("select accept_policy('2026-10-06')"),
+    );
+    await assert.rejects(
+      pg.query<Record<string, unknown>>("select clear_youtube_data($1,true)", [
+        A,
+      ]),
+    );
+    await assert.rejects(
+      pg.query<Record<string, unknown>>(
+        "select save_base_preferences('{}'::jsonb)",
+      ),
+    );
+    await pg.exec("reset role");
+    await pg.query<Record<string, unknown>>(
+      "select accept_policy('2026-10-06')",
+    );
+    assert.ok(
+      (
+        await pg.query<Record<string, unknown>>(
+          "select policy_accepted_at from settings",
+        )
+      ).rows[0].policy_accepted_at,
+    );
+  } finally {
+    await pg.close();
+  }
+});
+
+test("Disconnect clears authorized data, preserves completed source history and blocks retries after lost identifiers", async () => {
+  const pg = await db();
+  try {
+    await pg.query<Record<string, unknown>>(
+      'select save_preferences(\'{"enabled_platforms":["youtube"]}\'::jsonb)',
+    );
+    await pg.query<Record<string, unknown>>("select acquire_lease($1)", [A]);
+    await ingest(pg, "123");
+    await ingest(pg, "124");
+    await ingest(pg, "125");
+    await pg.exec(
+      "insert into credentials(platform,account_id,account_label,encrypted_payload) values('youtube','channel','test','encrypted')",
+    );
+    await pg.query<Record<string, unknown>>(
+      "select update_publication($1,'123','youtube',$2::jsonb)",
+      [
+        A,
+        JSON.stringify({
+          state: "published",
+          external_id: "completed",
+          public_url: "https://example.invalid",
+          published_at: "2026-10-06T10:00:00Z",
+        }),
+      ],
+    );
+    await pg.query<Record<string, unknown>>(
+      "select update_publication($1,'124','youtube',$2::jsonb)",
+      [
+        A,
+        JSON.stringify({
+          state: "publishing",
+          external_id: "uncertain",
+          encrypted_session: "encrypted",
+          rendered_metadata: { title: "hello" },
+        }),
+      ],
+    );
+    await pg.query<Record<string, unknown>>(
+      "select request_youtube_disconnect($1)",
+      [A],
+    );
+    assert.ok(
+      (
+        await pg.query<Record<string, unknown>>(
+          "select youtube_revoke_requested_at from settings",
+        )
+      ).rows[0].youtube_revoke_requested_at,
+    );
+    assert.equal(
+      (
+        await pg.query<Record<string, unknown>>(
+          "select encrypted_payload from credentials",
+        )
+      ).rows[0].encrypted_payload,
+      "encrypted",
+    );
+    assert.equal(
+      (
+        await pg.query<Record<string, unknown>>(
+          "select account_id from credentials",
+        )
+      ).rows[0].account_id,
+      null,
+    );
+    await pg.query<Record<string, unknown>>(
+      "select clear_youtube_data($1,true)",
+      [A],
+    );
+    assert.equal(
+      (await pg.query<Record<string, unknown>>("select * from credentials"))
+        .rows.length,
+      0,
+    );
+    const pubs = (
+      await pg.query<Record<string, unknown>>(
+        "select state,external_id,encrypted_session,rendered_metadata,public_url from publications where platform='youtube' order by video_id",
+      )
+    ).rows;
+    assert.equal(pubs[0].state, "published");
+    assert.equal(pubs[1].state, "attention");
+    assert.equal(pubs[2].state, "pending");
+    for (const pub of pubs) {
+      assert.equal(pub.external_id, null);
+      assert.equal(pub.encrypted_session, null);
+      assert.equal(pub.rendered_metadata, null);
+      assert.equal(pub.public_url, null);
+    }
+    assert.equal(
+      (
+        await pg.query<Record<string, unknown>>(
+          "select state from videos where id='123'",
+        )
+      ).rows[0].state,
+      "published",
+    );
+    assert.equal(
+      (
+        await pg.query<Record<string, unknown>>(
+          "select state from videos where id='124'",
+        )
+      ).rows[0].state,
+      "attention",
+    );
+    await pg.query<Record<string, unknown>>("select release_lease($1)", [A]);
+    await assert.rejects(
+      pg.query<Record<string, unknown>>("select control_video('124','retry')"),
+    );
+    await pg.query<Record<string, unknown>>(
+      "select control_video('124','skip')",
+    );
+    await pg.query<Record<string, unknown>>("select acquire_lease($1)", [A]);
+    await ingest(pg, "123");
+    assert.equal(
+      (
+        await pg.query<Record<string, unknown>>(
+          "select state from videos where id='123'",
+        )
+      ).rows[0].state,
+      "published",
+    );
+  } finally {
+    await pg.close();
+  }
+});
+
+test("Stale API references expire without creating reupload candidates; lost leases cannot erase data", async () => {
+  const pg = await db();
+  try {
+    await pg.query<Record<string, unknown>>("select acquire_lease($1)", [A]);
+    await ingest(pg);
+    await pg.query<Record<string, unknown>>(
+      "select update_publication($1,'123','youtube',$2::jsonb)",
+      [A, JSON.stringify({ state: "ready", external_id: "old-upload" })],
+    );
+    await pg.exec(
+      "update publications set api_checked_at=now()-interval '31 days' where platform='youtube'",
+    );
+    await assert.rejects(
+      pg.query<Record<string, unknown>>("select expire_youtube_data($1)", [B]),
+    );
+    assert.equal(
+      (
+        await pg.query<Record<string, unknown>>(
+          "select external_id from publications where platform='youtube'",
+        )
+      ).rows[0].external_id,
+      "old-upload",
+    );
+    await pg.query<Record<string, unknown>>("select expire_youtube_data($1)", [
+      A,
+    ]);
+    assert.equal(
+      (
+        await pg.query<Record<string, unknown>>(
+          "select state,external_id from publications where platform='youtube'",
+        )
+      ).rows[0].state,
+      "attention",
+    );
+    assert.equal(
+      (
+        await pg.query<Record<string, unknown>>(
+          "select external_id from publications where platform='youtube'",
+        )
+      ).rows[0].external_id,
+      null,
+    );
+    await pg.exec(
+      "insert into credentials(platform,account_id,account_label,encrypted_payload) values('youtube',null,'pending','encrypted'); update settings set youtube_revoke_requested_at=now()-interval '8 days'",
+    );
+    await pg.query<Record<string, unknown>>("select expire_youtube_data($1)", [
+      A,
+    ]);
+    assert.equal(
+      (await pg.query<Record<string, unknown>>("select * from credentials"))
+        .rows.length,
+      0,
+    );
+    assert.equal(
+      (await pg.query<Record<string, unknown>>("select paused from settings"))
+        .rows[0].paused,
+      true,
+    );
+  } finally {
+    await pg.close();
+  }
+});

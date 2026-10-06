@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ArrowLeft, ArrowUpRight, Repeat2 } from "lucide-react";
+import { PolicyLinks } from "@/components/policy-links";
 const steps = [
   [
     "Create your database",
@@ -50,6 +51,7 @@ export default function Setup() {
           </article>
         ))}
       </div>
+      <PolicyLinks />
       <div className="panel">
         <h2>OAuth callback URLs</h2>
         <p>

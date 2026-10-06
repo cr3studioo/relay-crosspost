@@ -15,6 +15,7 @@ class FakeStore:
         self.config = {"source_profile": "https://www.tiktok.com/@test", "import_complete": False, "paused": False,
                        "integrations_verified": True, "youtube_audit_confirmed": True, "timezone": "Europe/Prague",
                        "enabled_platforms": ["instagram", "youtube"],
+                       "policy_version": "2026-10-06", "policy_accepted_at": "2026-10-06T07:00:00Z", "youtube_visibility": "public",
                        "start_hour": 7, "end_hour": 21, "last_publication_at": None,
                        "instagram_template": "{caption}", "youtube_title_template": "{first_line}", "youtube_description_template": "{caption}"}
         self.videos, self.pubs, self.messages = {}, {}, []
@@ -68,6 +69,7 @@ class FakeProvider:
     def __init__(self, store, platform, fail=None): self.store, self.platform, self.fail, self.calls = store, platform, fail, []
     def prepare(self, video, pub, path, metadata):
         self.store.publication_patch(video["id"], self.platform, {"state": "ready", "external_id": "fake", "rendered_metadata": metadata})
+    def maintain(self, accepted): pass
     def publish(self, video, pub):
         if hasattr(self, "before_publish"):self.before_publish()
         self.calls.append(video["id"])
@@ -76,7 +78,7 @@ class FakeProvider:
             error = self.fail
             if not error.uncertain:self.store.publication_patch(video["id"], self.platform, {"state": "ready", "resume_state": "ready"})
             raise error
-        self.store.publication_patch(video["id"], self.platform, {"state": "published", "published_at": INSTANT.isoformat(), "resume_state": None})
+        self.store.publication_patch(video["id"], self.platform, {"state": "published", "published_at": INSTANT.isoformat(), "confirmation_origin": "relay_api", "resume_state": None})
     def reconcile(self, video, pub):
         raise RelayError("publication_outcome_unknown", permanent=True, uncertain=True)
 
@@ -236,6 +238,52 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(db.videos["1"]["state"], "published")
         self.assertEqual(providers["instagram"].calls, ["1"])
         self.assertEqual(providers["youtube"].calls, [])
+
+    @patch("worker.engine.now", return_value=INSTANT)
+    def test_policy_gate_prevents_discovery_and_verification_uploads(self, _clock):
+        db, providers, engine = self.create()
+        db.config["policy_version"] = None
+        with patch.object(engine.source, "list", wraps=engine.source.list) as discovery:
+            result = engine.tick("1")
+            self.assertIn("accept the policies", result)
+            discovery.assert_not_called()
+        self.assertFalse(db.videos)
+        self.assertFalse(providers["youtube"].calls)
+
+    @patch("worker.engine.now", return_value=INSTANT)
+    def test_private_visibility_can_verify_without_public_upload_audit(self, _clock):
+        db, providers, engine = self.create()
+        db.config.update(enabled_platforms=["youtube"], youtube_visibility="private", youtube_audit_confirmed=False, paused=True)
+        engine.tick("1")
+        self.assertEqual(providers["youtube"].calls, ["1"])
+        self.assertTrue(db.config["integrations_verified"])
+
+    @patch("worker.engine.now", return_value=INSTANT)
+    def test_unlisted_visibility_still_requires_public_upload_audit(self, _clock):
+        db, providers, engine = self.create()
+        db.config.update(enabled_platforms=["youtube"], youtube_visibility="unlisted", youtube_audit_confirmed=False)
+        engine.tick()
+        self.assertFalse(providers["youtube"].calls)
+
+    @patch("worker.engine.now", return_value=INSTANT)
+    def test_pending_revocation_stops_discovery_and_uploads(self, _clock):
+        db, providers, engine = self.create()
+        db.config["youtube_revoke_requested_at"] = INSTANT.isoformat()
+        result = engine.tick("1")
+        self.assertIn("disconnection is pending", result)
+        self.assertFalse(db.videos)
+
+    @patch("worker.engine.now", return_value=INSTANT)
+    def test_manual_completion_does_not_verify_relay_and_cannot_reupload(self, _clock):
+        db, providers, engine = self.create()
+        db.config.update(enabled_platforms=["youtube"], integrations_verified=False, paused=True)
+        for video in POSTS: db.ingest(video)
+        db.publication_patch("1", "youtube", {"state": "published", "external_id": "existing", "published_at": INSTANT.isoformat(), "confirmation_origin": "manual"})
+        result = engine.tick("1")
+        self.assertIn("test_video_published_manually_choose_another", result)
+        self.assertFalse(db.config["integrations_verified"])
+        self.assertFalse(providers["youtube"].calls)
+        self.assertEqual(db.head()["id"], "2")
 
 
 if __name__ == "__main__": unittest.main()

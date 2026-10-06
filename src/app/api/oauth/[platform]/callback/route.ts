@@ -8,12 +8,14 @@ import {
   decrypt,
   checkedFetch,
   admin,
+  requirePolicy,
 } from "@/lib/server";
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ platform: string }> },
 ) {
   const user = await owner();
+  await requirePolicy();
   const { platform } = await params;
   if (!["youtube", "instagram"].includes(platform))
     return new NextResponse("Unknown platform", { status: 404 });
@@ -45,6 +47,14 @@ export async function GET(
     )
       throw new Error("Invalid authorization state");
     const callback = env("APP_URL") + `/api/oauth/${platform}/callback`;
+    const { data: settings } = await admin()
+      .from("settings")
+      .select("youtube_revoke_requested_at")
+      .single();
+    if (settings?.youtube_revoke_requested_at)
+      return redirect(
+        "Finish the pending YouTube disconnection before reconnecting.",
+      );
     const { data: existing } = await admin()
       .from("credentials")
       .select("account_id")
@@ -166,7 +176,11 @@ export async function GET(
       );
     const { error } = await admin()
       .from("credentials")
-      .upsert({ ...record, connected_at: new Date().toISOString() });
+      .upsert({
+        ...record,
+        connected_at: new Date().toISOString(),
+        api_checked_at: new Date().toISOString(),
+      });
     if (error) throw new Error("Could not save connection");
     return redirect(
       record.account_id

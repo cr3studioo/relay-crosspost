@@ -21,7 +21,7 @@ import {
   CheckCircle2,
   SkipForward,
 } from "lucide-react";
-import { admin, configured, owner, decrypt } from "@/lib/server";
+import { admin, configured, owner, decrypt, requirePolicy } from "@/lib/server";
 import {
   defaults,
   type Settings,
@@ -35,7 +35,9 @@ import {
   saveSettings,
   chooseInstagram,
   logout,
+  disconnectYouTube,
 } from "./actions";
+import { PolicyLinks } from "@/components/policy-links";
 import { Submit } from "@/components/submit";
 import { Refresh } from "@/components/refresh";
 export const dynamic = "force-dynamic";
@@ -135,11 +137,12 @@ export default async function Dashboard({
   );
   if (!preview) {
     await owner();
+    await requirePolicy();
     const db = admin();
     const query = db
       .from("videos")
       .select(
-        "id,source_url,source_created_at,caption,state,reason,duration,publications(platform,required,state,external_id,public_url,published_at,error_code,next_retry_at)",
+        "id,source_url,source_created_at,caption,state,reason,duration,publications(platform,required,state,external_id,public_url,published_at,error_code,next_retry_at,youtube_visibility,confirmation_origin)",
       );
     const filter =
       tab === "queue" || tab === "settings"
@@ -245,6 +248,7 @@ export default async function Dashboard({
           <Link className="guide-link" href="/setup">
             <Info size={16} /> Setup guide <ArrowUpRight size={14} />
           </Link>
+          <PolicyLinks />
           <div className="profile">
             <span className="avatar">Y</span>
             <div>
@@ -414,6 +418,30 @@ export default async function Dashboard({
                   </label>
                 </div>
                 <div className="form-divider" />
+                <label>
+                  YouTube visibility
+                  <select
+                    name="youtube_visibility"
+                    defaultValue={settings.youtube_visibility}
+                  >
+                    <option value="public">Public — anyone can watch</option>
+                    <option value="unlisted">
+                      Unlisted — anyone with the link can watch
+                    </option>
+                    <option value="private">
+                      Private — only authorized viewers can watch
+                    </option>
+                  </select>
+                </label>
+                <p className="muted">
+                  For{" "}
+                  {connections.find((c) => c.platform === "youtube")
+                    ?.account_label || "your connected YouTube channel"}
+                  . Videos upload privately first. Relay then applies this
+                  visibility to unfinished and future uploads at their scheduled
+                  time. A change pauses automation for a new setup test.
+                  Completed videos keep their existing visibility.
+                </p>
                 <h3>Your caption templates</h3>
                 <p className="muted">
                   Use <code>{"{caption}"}</code>, <code>{"{first_line}"}</code>,{" "}
@@ -461,6 +489,34 @@ export default async function Dashboard({
                   Save preferences <Check size={16} />
                 </Submit>
               </form>
+              <div className="form-divider" />
+              <h3>YouTube access and stored data</h3>
+              <p className="muted">
+                Disconnecting pauses the queue, revokes Google access and
+                removes Relay’s stored YouTube account and upload references. It
+                does not delete videos on YouTube. Completed source IDs remain
+                recorded; interrupted uploads require review to avoid
+                duplicates.
+              </p>
+              <form action={disconnectYouTube}>
+                <label className="checkbox">
+                  <input type="checkbox" name="confirm_disconnect" required />
+                  <span>
+                    I want to revoke access and delete Relay’s stored YouTube
+                    data.
+                  </span>
+                </label>
+                <Submit className="button subtle" disabled={preview}>
+                  Disconnect YouTube and delete data
+                </Submit>
+              </form>
+              <a
+                className="text-link"
+                href="https://security.google.com/settings/security/permissions"
+              >
+                Manage Google account permissions ↗
+              </a>
+              <PolicyLinks />
             </section>
           ) : (
             <>
@@ -604,7 +660,7 @@ export default async function Dashboard({
                 </article>
                 <article>
                   <span>
-                    Published <CheckCircle2 size={16} />
+                    Completed <CheckCircle2 size={16} />
                   </span>
                   <strong>{String(counts.published).padStart(2, "0")}</strong>
                   <small>Selected destinations confirmed</small>
@@ -635,8 +691,11 @@ export default async function Dashboard({
                         : "A few connections, then you’re ready."}
                     </strong>
                     <p>
-                      Connect your selected destinations, import your TikToks,
-                      and verify one post before enabling automation.
+                      {settings.enabled_platforms.includes("youtube") &&
+                      settings.youtube_visibility !== "private" &&
+                      !settings.youtube_audit_confirmed
+                        ? "YouTube public-upload approval is pending. After Google approves the project, confirm the audit in Settings and verify one post."
+                        : "Connect your selected destinations, import your TikToks, and verify one post with your selected visibility before enabling automation."}
                     </p>
                   </div>
                   <Link href="/setup">
@@ -668,9 +727,11 @@ export default async function Dashboard({
                     >
                       {t === "queue"
                         ? "Queued"
-                        : t === "attention"
-                          ? "Needs attention"
-                          : t[0].toUpperCase() + t.slice(1)}{" "}
+                        : t === "published"
+                          ? "Completed"
+                          : t === "attention"
+                            ? "Needs attention"
+                            : t[0].toUpperCase() + t.slice(1)}{" "}
                       <span>{counts[t]}</span>
                     </Link>
                   ))}
@@ -705,15 +766,29 @@ export default async function Dashboard({
                           </p>
                           <div className="video-links">
                             {video.publications
-                              .filter((p) => p.public_url)
+                              .filter(
+                                (p) =>
+                                  p.public_url ||
+                                  (p.platform === "youtube" && p.external_id),
+                              )
                               .map((p) => (
                                 <a
                                   key={p.platform}
-                                  href={p.public_url!}
+                                  href={
+                                    p.public_url ||
+                                    `https://www.youtube.com/watch?v=${p.external_id}`
+                                  }
                                   target="_blank"
                                   rel="noreferrer"
                                 >
-                                  {p.platform} <ArrowUpRight size={11} />
+                                  {p.platform}
+                                  {p.confirmation_origin === "manual"
+                                    ? " · posted manually"
+                                    : ""}
+                                  {p.platform === "youtube"
+                                    ? ` · ${p.youtube_visibility || "check visibility"}`
+                                    : ""}{" "}
+                                  <ArrowUpRight size={11} />
                                 </a>
                               ))}
                           </div>

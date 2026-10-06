@@ -8,7 +8,10 @@ import {
   env,
   decrypt,
   encrypt,
+  requirePolicy,
 } from "@/lib/server";
+import { POLICY_VERSION } from "@/lib/policy";
+import { randomUUID } from "node:crypto";
 import type { Platform, Settings } from "@/lib/types";
 function feedback(message: string): never {
   redirect("/?notice=" + encodeURIComponent(message));
@@ -38,6 +41,7 @@ export async function togglePause() {
   if (error) feedback("Could not load settings.");
   const s = data as Settings;
   if (s.paused) {
+    await requirePolicy();
     const { data: connections, error: ce } = await db
       .from("credentials")
       .select("platform,account_id");
@@ -47,7 +51,10 @@ export async function togglePause() {
         connections?.some((c) => c.platform === platform && c.account_id),
       ) ||
       !s.source_profile ||
-      (s.enabled_platforms.includes("youtube") && !s.youtube_audit_confirmed) ||
+      (s.enabled_platforms.includes("youtube") &&
+        s.youtube_visibility !== "private" &&
+        !s.youtube_audit_confirmed) ||
+      s.youtube_revoke_requested_at ||
       !s.integrations_verified ||
       !s.import_complete
     )
@@ -64,6 +71,7 @@ export async function togglePause() {
 }
 export async function controlVideo(form: FormData) {
   await owner();
+  await requirePolicy();
   const id = String(form.get("id"));
   const action = String(form.get("action"));
   if (!/^\d+$/.test(id) || !["skip", "retry"].includes(action))
@@ -73,11 +81,19 @@ export async function controlVideo(form: FormData) {
     p_action: action,
   });
   if (error)
-    feedback("The worker may be running. Try again after it finishes.");
+    feedback(
+      error.message.includes("references were deleted")
+        ? "YouTube data was deleted. Check your channel, then skip this item to avoid a duplicate upload."
+        : "The worker may be running. Try again after it finishes.",
+    );
   revalidatePath("/");
 }
 export async function saveSettings(form: FormData) {
   await owner();
+  await requirePolicy();
+  const youtube_visibility = String(form.get("youtube_visibility") || "");
+  if (!["public", "private", "unlisted"].includes(youtube_visibility))
+    feedback("Choose a YouTube visibility setting.");
   const enabled_platforms = (["instagram", "youtube"] as Platform[]).filter(
     (platform) => form.getAll("enabled_platforms").includes(platform),
   );
@@ -143,6 +159,7 @@ export async function saveSettings(form: FormData) {
       end_hour,
       ...templates,
       enabled_platforms,
+      youtube_visibility,
       youtube_audit_confirmed: form.get("youtube_audit_confirmed") === "on",
     },
   });
@@ -155,6 +172,7 @@ export async function saveSettings(form: FormData) {
 }
 export async function chooseInstagram(form: FormData) {
   await owner();
+  await requirePolicy();
   const db = admin();
   const { data } = await db
     .from("credentials")
@@ -191,4 +209,97 @@ export async function chooseInstagram(form: FormData) {
   if (error) feedback("Could not save the connection.");
   revalidatePath("/");
   feedback("Instagram connected.");
+}
+
+export async function acceptPolicy(form: FormData) {
+  await owner();
+  if (
+    form.get("accept_policy") !== "on" ||
+    form.get("policy_version") !== POLICY_VERSION
+  )
+    redirect("/consent?error=Please+read+and+accept+the+current+policies.");
+  const { error } = await admin().rpc("accept_policy", {
+    p_version: POLICY_VERSION,
+  });
+  if (error) redirect("/consent?error=Could+not+save+your+choice.+Try+again.");
+  revalidatePath("/");
+  redirect(
+    "/?tab=settings&notice=" +
+      encodeURIComponent(
+        "Policies accepted. Review your publishing preferences; the queue is paused.",
+      ),
+  );
+}
+
+export async function disconnectYouTube(form: FormData) {
+  await owner();
+  if (form.get("confirm_disconnect") !== "on")
+    feedback(
+      "Confirm that you want to revoke access and delete Relay’s YouTube data.",
+    );
+  const db = admin();
+  // Pausing is safe even if an active worker currently owns the lease.
+  await db.from("settings").update({ paused: true }).eq("singleton", true);
+  const holder = randomUUID();
+  const { data: acquired, error: leaseError } = await db.rpc("acquire_lease", {
+    p_holder: holder,
+  });
+  if (leaseError || !acquired)
+    feedback(
+      "Queue paused. Wait for the current worker to finish, then disconnect again.",
+    );
+  let notice =
+    "YouTube disconnected and Relay’s stored YouTube data deleted. Videos on YouTube remain available.";
+  try {
+    const { data, error } = await db
+      .from("credentials")
+      .select("encrypted_payload")
+      .eq("platform", "youtube")
+      .maybeSingle();
+    if (error) throw new Error("Could not read connection");
+    const token = data
+      ? decrypt<{ refresh_token?: string; access_token?: string }>(
+          data.encrypted_payload,
+        )
+      : null;
+    const requested = await db.rpc("request_youtube_disconnect", {
+      p_holder: holder,
+    });
+    if (requested.error) throw new Error("Could not record disconnection");
+    let revoked = !token;
+    if (token) {
+      try {
+        const response = await fetch("https://oauth2.googleapis.com/revoke", {
+          method: "POST",
+          body: new URLSearchParams({
+            token: token.refresh_token || token.access_token || "",
+          }),
+          cache: "no-store",
+          signal: AbortSignal.timeout(20000),
+        });
+        revoked =
+          response.ok ||
+          (response.status === 400 &&
+            (await response.json()).error === "invalid_token");
+      } catch {
+        /* The worker will retry the revocation, with the queue paused. */
+      }
+    }
+    if (revoked) {
+      const result = await db.rpc("clear_youtube_data", {
+        p_holder: holder,
+        p_credentials: true,
+      });
+      if (result.error) throw new Error("Could not finish disconnection");
+    } else
+      notice =
+        "Queue paused and stored YouTube references cleared. Google revocation is pending; the worker will retry. You can also remove Relay in Google account permissions.";
+  } catch {
+    notice =
+      "Could not finish disconnection. The queue is paused; retry or remove Relay in Google account permissions.";
+  } finally {
+    await db.rpc("release_lease", { p_holder: holder });
+  }
+  revalidatePath("/");
+  feedback(notice);
 }

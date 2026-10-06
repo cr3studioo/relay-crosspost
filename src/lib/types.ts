@@ -8,6 +8,10 @@ export type Settings = {
   import_complete: boolean;
   integrations_verified: boolean;
   youtube_audit_confirmed: boolean;
+  youtube_visibility: "public" | "private" | "unlisted";
+  policy_version: string | null;
+  policy_accepted_at: string | null;
+  youtube_revoke_requested_at: string | null;
   enabled_platforms: Platform[];
   instagram_template: string;
   youtube_title_template: string;
@@ -26,6 +30,8 @@ export type Publication = {
   published_at: string | null;
   error_code: string | null;
   next_retry_at: string | null;
+  youtube_visibility: string | null;
+  confirmation_origin: "relay_api" | "manual" | null;
 };
 export type Video = {
   id: string;
@@ -52,6 +58,10 @@ export const defaults: Settings = {
   import_complete: false,
   integrations_verified: false,
   youtube_audit_confirmed: false,
+  youtube_visibility: "public",
+  policy_version: null,
+  policy_accepted_at: null,
+  youtube_revoke_requested_at: null,
   enabled_platforms: ["instagram", "youtube"],
   instagram_template: "{caption}",
   youtube_title_template: "{first_line}",

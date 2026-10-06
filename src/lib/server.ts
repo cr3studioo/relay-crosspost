@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { seal, unseal } from "./crypto-core";
+import { policyAccepted } from "./policy";
 export function configured(): boolean {
   return !!(
     process.env.NEXT_PUBLIC_SUPABASE_URL &&
@@ -62,6 +63,13 @@ export async function owner() {
 }
 export function encrypt(value: unknown): string {
   return seal(value, env("TOKEN_ENCRYPTION_KEY"));
+}
+export async function requirePolicy() {
+  const { data, error } = await admin()
+    .from("settings")
+    .select("policy_version,policy_accepted_at")
+    .single();
+  if (error || !data || !policyAccepted(data)) redirect("/consent");
 }
 export function decrypt<T>(value: string): T {
   return unseal<T>(value, env("TOKEN_ENCRYPTION_KEY"));

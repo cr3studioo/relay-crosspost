@@ -1,12 +1,27 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { randomBytes, createHash } from "node:crypto";
-import { owner, env, encrypt } from "@/lib/server";
+import { owner, env, encrypt, requirePolicy, admin } from "@/lib/server";
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ platform: string }> },
 ) {
   const user = await owner();
+  await requirePolicy();
+  const { data: settings } = await admin()
+    .from("settings")
+    .select("youtube_revoke_requested_at")
+    .single();
+  if (settings?.youtube_revoke_requested_at)
+    return NextResponse.redirect(
+      new URL(
+        "/?notice=" +
+          encodeURIComponent(
+            "Finish the pending YouTube disconnection before reconnecting.",
+          ),
+        _request.url,
+      ),
+    );
   const { platform } = await params;
   if (!["youtube", "instagram"].includes(platform))
     return new NextResponse("Unknown platform", { status: 404 });

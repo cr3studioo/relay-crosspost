@@ -101,12 +101,22 @@ https://YOUR-APP.vercel.app/api/oauth/youtube/callback
 ```
 
 3. Configure the consent screen's production status appropriately for unattended refresh tokens. External apps left in Testing can have refresh tokens expire after seven days; scope verification and the YouTube upload audit are separate requirements. Follow the requirements Google presents for your project.
-4. Connect the intended YouTube channel in Relay. It requests `youtube.force-ssl` because it must upload, read processing status, and update an existing video's privacy without uploading a second copy. The worker uses the resulting refresh token.
+4. Read and accept Relay’s privacy policy and terms, then connect the intended YouTube channel in Relay. It requests `youtube.force-ssl` because it must upload, read processing status, and update an existing video's privacy without uploading a second copy. The worker uses the resulting refresh token.
 5. **Complete the YouTube API project audit for public uploads.** New unaudited API projects can be restricted to private uploads. After confirming public API publication is allowed, tick the audit confirmation in Relay Settings. The app does not bypass private-only restrictions.
 
 Audit requirement: https://developers.google.com/youtube/v3/docs/videos/insert
 
 The app has one fixed destination per platform. Reconnection must select the same Instagram account and YouTube channel; deliberate destination changes require a history reset rather than silently reusing another account's upload IDs.
+
+## Privacy, visibility and revocation
+
+Public policy pages are available at `/privacy` and `/terms`; login and the dashboard link to both. The privacy contact defaults to `OWNER_EMAIL`; set `PRIVACY_CONTACT_EMAIL` to a suitable public business contact if different. Owner consent is versioned and must be accepted before account connections, discovery, uploads or queue controls. Accepting policies leaves automation paused.
+
+YouTube visibility supports public, unlisted and private. Uploads begin privately for processing, then the worker applies the chosen visibility to the known upload ID. Changing visibility affects unfinished/future uploads, pauses automation and resets setup verification. Completed videos are not changed. Manually making an upload public in Studio does not verify Relay's publishing integration or Google's audit approval.
+
+**Disconnect YouTube and delete data** pauses automation, requests Google token revocation and clears stored YouTube account identifiers, upload/session IDs, links and rendered metadata. If Google is unavailable, encrypted tokens remain only for revocation retries, with a seven-day expiry. Previously completed TikTok IDs and Relay's own completion facts remain to prevent duplicates. Incomplete uploads that lost their identifiers require review and skipping; Retry cannot create a duplicate from a deleted reference. YouTube-hosted videos are never deleted by this control.
+
+Each worker run checks authorization even when paused. A confirmed `invalid_grant` clears authorized data; temporary network failures do not. The worker attempts weekly refreshes of channel names and video visibility in batches of 50 references. Stale references expire after 30 days. Cleanup needs a running worker; restart after downtime or have the operator delete data through the server. Activity events expire after 30 days. Browser roles cannot execute consent, deletion, refresh or preference RPCs directly.
 
 ## 5. GitHub worker secrets and retrieval probe
 
@@ -140,9 +150,9 @@ If only profile resolution fails, yt-dlp supports looking up the same public acc
 
 ## 6. Import, verify one post, then resume
 
-1. Sign in to Relay and save your exact public TikTok profile URL in Settings. Select YouTube, Instagram, or both, and connect only those destinations. Configure templates and the audit confirmation if YouTube is selected. Publishing remains paused.
+1. Sign in to Relay, read and accept the current policies, and save your exact public TikTok profile URL in Settings. Select YouTube, Instagram, or both, and connect only those destinations. Configure templates and YouTube visibility. Confirm the audit only after Google approves public/unlisted API uploads. Publishing remains paused.
 2. Run the worker in `tick` mode. It imports the full history. If a run ends at its time budget, discovered IDs remain saved; subsequent runs avoid re-writing them and continue until enumeration completes. No normal posting starts before a complete import.
-3. Choose **one queued eligible TikTok** as the real publishing test. Its TikTok ID is the number in its original URL. Run `verify` with that `video_id`, during your posting window. This intentionally publishes that single selected video to your selected destinations even while the normal queue is paused.
+3. Choose **one queued eligible TikTok** as the real publishing test. Its TikTok ID is the number in its original URL. Run `verify` with that `video_id`, during your posting window. This intentionally completes that single selected video at your chosen visibility on the selected destinations, even while the normal queue is paused. Public and unlisted YouTube publication require audit approval; choosing private permits a private-only test.
 4. If processing requires several checks, rerun **verify with the same ID**. The same stored upload/container IDs are reused. The chosen video is recorded as published and will not be reposted by the backlog.
 5. Once publications to every selected destination are confirmed, `integrations_verified` becomes true. Click **Resume queue** in Relay. Later scheduled runs post the oldest remaining eligible videos, with the hourly gap.
 

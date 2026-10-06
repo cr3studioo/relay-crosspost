@@ -89,5 +89,18 @@ class Store:
         self.heartbeat()
         self.request("PATCH", "credentials", params={"platform": f"eq.{platform}"}, json={"encrypted_payload": seal(payload, self.key)})
 
+    def clear_youtube_data(self):
+        self.rpc("clear_youtube_data", p_credentials=True)
+
+    def expire_youtube_data(self):
+        self.rpc("expire_youtube_data")
+
+    def refresh_youtube_publication(self, video_id, visibility):
+        self.rpc("refresh_youtube_publication", p_id=video_id, p_visibility=visibility)
+
+    def stale_youtube_publications(self, before):
+        return self.request("GET", "publications", params={"platform": "eq.youtube", "external_id": "not.is.null",
+            "api_checked_at": "lt." + before, "select": "video_id,external_id", "order": "api_checked_at.asc", "limit": "50"})
+
     def event(self, level, message, video_id=None):
         self.rpc("worker_event", p_level=level, p_message=message, p_video_id=video_id)
