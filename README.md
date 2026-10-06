@@ -34,7 +34,7 @@ Without configuration, the homepage is an explicitly labeled sample preview. It 
 ## 2. Supabase Free project
 
 1. Create a **Free** project at https://supabase.com/dashboard. Stay on the Free plan; do not enable paid add-ons.
-2. Run [`supabase/migrations/001_relay.sql`](supabase/migrations/001_relay.sql) once in SQL Editor.
+2. Run the SQL files in [`supabase/migrations`](supabase/migrations) once in filename order in SQL Editor: first `001_relay.sql`, then the access-hardening migration. If the database was provisioned through the connected Supabase app, these are already recorded; do not run them twice.
 3. In Authentication → Users, create your single email/password user. Confirm its email. Disable **Allow new users to sign up** in the project's authentication settings.
 4. Copy that user's UUID and run:
 
@@ -56,7 +56,7 @@ Copy the variables from [`.env.example`](.env.example) into Vercel environment s
 | Variable | Value |
 |---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase publishable key (legacy anon keys also work) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key; server only |
 | `OWNER_EMAIL` | Exactly your provisioned user's email |
 | `APP_URL` | Your production `https://…vercel.app` origin, no trailing slash |

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
 const A = "11111111-1111-4111-8111-111111111111",
   B = "22222222-2222-4222-8222-222222222222";
@@ -9,7 +9,12 @@ async function db() {
   await pg.exec(
     `create role anon; create role authenticated; create role service_role bypassrls; create schema auth; create table auth.users(id uuid primary key); create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$; grant usage on schema public,auth to authenticated,anon,service_role; grant execute on function auth.uid() to authenticated;`,
   );
-  await pg.exec(readFileSync("supabase/migrations/001_relay.sql", "utf8"));
+  const migrations = readdirSync("supabase/migrations")
+    .filter((f) => f.endsWith(".sql"))
+    .sort();
+  for (const file of migrations) {
+    await pg.exec(readFileSync(`supabase/migrations/${file}`, "utf8"));
+  }
   return pg;
 }
 async function ingest(pg: PGlite, id = "123", date = "2026-10-01T00:00:00Z") {
@@ -145,6 +150,9 @@ test("Only the provisioned owner can read rows; browsers cannot access credentia
   try {
     await pg.query("insert into auth.users(id) values($1),($2)", [A, B]);
     await pg.query("insert into app_owner(user_id) values($1)", [A]);
+    await pg.exec("set role anon");
+    await assert.rejects(pg.query("select * from settings"));
+    await assert.rejects(pg.query("select is_owner()"));
     await pg.exec("set role authenticated");
     await pg.query("select set_config('request.jwt.claim.sub',$1,false)", [B]);
     assert.equal((await pg.query("select * from settings")).rows.length, 0);

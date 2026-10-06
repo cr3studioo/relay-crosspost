@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowUpRight, Repeat2 } from "lucide-react";
 const steps = [
   [
     "Create your database",
-    "Create a Supabase Free project. Run supabase/migrations/001_relay.sql in its SQL Editor. Create your single email/password user under Authentication, disable sign-ups, and insert that user's UUID into app_owner.",
+    "Create a Supabase Free project. Run the SQL files in supabase/migrations in filename order in its SQL Editor. Create your single email/password user under Authentication, disable sign-ups, and insert that user's UUID into app_owner.",
   ],
   [
     "Deploy the dashboard",

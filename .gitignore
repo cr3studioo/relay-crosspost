@@ -1,6 +1,7 @@
 node_modules/
 .next/
 .vercel/
+supabase/.temp/
 .env*
 !.env.example
 .venv/
