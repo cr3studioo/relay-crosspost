@@ -63,6 +63,7 @@ Copy the variables from [`.env.example`](.env.example) into Vercel environment s
 | `TOKEN_ENCRYPTION_KEY` | Shared 64-character hex key, generated below |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google web OAuth application credentials |
 | `META_APP_ID`, `META_APP_SECRET` | Your Meta app credentials |
+| `META_LOGIN_CONFIG_ID` | Facebook Login for Business configuration ID, when your app uses a configuration |
 | `META_GRAPH_VERSION` | `v25.0` (or a compatible supported version after testing) |
 
 Generate the encryption key **once**, privately in your terminal:
@@ -78,7 +79,7 @@ Use the **same key** in Vercel and GitHub Secrets. Keep it backed up privately; 
 ### Instagram / Meta
 
 1. Switch your Instagram account to **Creator or Business**, and link a Facebook Page you administer. The app will not post to that Page.
-2. Create a Meta developer app and configure the Instagram API with **Facebook Login for Business** so direct resumable file uploads are available.
+2. Create a Meta developer app and configure the Instagram API with **Facebook Login for Business** so direct resumable file uploads are available. If you create a Login for Business configuration, choose a user access token, include the permissions listed below, and set its ID as `META_LOGIN_CONFIG_ID` in Vercel. Relay exchanges the returned authorization code on the server.
 3. Add this exact valid OAuth redirect URI:
 
 ```text

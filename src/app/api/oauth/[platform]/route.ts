@@ -71,10 +71,15 @@ export async function GET(
       createHash("sha256").update(verifier).digest("base64url"),
     );
     url.searchParams.set("code_challenge_method", "S256");
-  } else
+  } else {
     url.searchParams.set(
       "scope",
       "pages_show_list,pages_read_engagement,instagram_basic,instagram_content_publish",
     );
+    if (process.env.META_LOGIN_CONFIG_ID) {
+      url.searchParams.set("config_id", env("META_LOGIN_CONFIG_ID"));
+      url.searchParams.set("override_default_response_type", "true");
+    }
+  }
   return NextResponse.redirect(url);
 }
