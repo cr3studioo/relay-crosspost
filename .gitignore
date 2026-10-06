@@ -1,0 +1,17 @@
+node_modules/
+.next/
+.vercel/
+.env*
+!.env.example
+.venv/
+__pycache__/
+*.pyc
+*.tsbuildinfo
+.pytest_cache/
+*.mp4
+*.mov
+*.webm
+*.part
+cookies.txt
+worker/.env
+work/
